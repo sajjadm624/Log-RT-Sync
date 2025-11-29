@@ -2,7 +2,43 @@
 
 ## Project Purpose
 
-**Log-RT-Sync** synchronises Nginx access logs from multiple application servers (“sender” servers) to a central client-end SFTP server via an intermediate “receiver” server. Features include robust failover, log rotation handling, real-time monitoring, email alerting, and housekeeping for optimal reliability.
+**Log-RT-Sync** synchronizes Nginx access logs from multiple application servers (“sender” servers) to a central client-end SFTP server via an intermediate “receiver” server. Features include robust failover, log rotation handling, real-time monitoring, email alerting, and housekeeping for optimal reliability.
+
+---
+
+## Quick Start
+
+1. **Clone the repo to each relevant server:**
+   ```bash
+   git clone https://github.com/sajjadm624/Log-RT-Sync.git
+   cd Log-RT-Sync
+   ```
+
+2. **Install required dependencies:**
+   - Python 3
+   - [gunicorn](https://gunicorn.org/) (for receiver concurrency)
+   - rsync, sshpass, gzip (for log sending and housekeeping)
+
+3. **Service Setup (systemd):**
+   - Configure and copy the example service files (see below).
+   - Reload systemd and enable/start the service:
+     ```bash
+     sudo systemctl daemon-reload
+     sudo systemctl enable log-shipper
+     sudo systemctl start log-shipper
+     sudo systemctl status log-shipper
+     ```
+     *(Repeat for receiver and log-sender services)*
+
+4. **Verify log sync:**
+   - Sender-end: log-shipper actively ships logs.
+   - Receiver-end: logs written to `/app/log/access-log-reciever/<server_ip>/`
+   - Logs are periodically transferred to SFTP server.
+
+5. **Monitor services and log flow:**
+   ```bash
+   sudo journalctl -u log-shipper   # or -u edw-rsync, -u log-receiver
+   ```
 
 ---
 
@@ -21,13 +57,10 @@
          |   (rotation, reboot)   |-- Multiple gunicorn workers     |
          '-------------------^    |   for concurrency               |
                              |    |-- Monitored & summarized       |
-                             |    '--------------------^           |
-                             |          |              |           |
-+----------------------------+          |              |           |
-| Log Monitoring & Email     |----------'              |           |
-| Log-Monitoring-scripts-    |-- Monitors per server   |           |
-| with-mail.py               |-- Sends alerts & hourly |           |
-| SMTP alerts                |   summaries             |           |
++----------------------------+    '--------------------^           |
+| Log Monitoring & Email     |--------- Monitors per server        |
+| Log-Monitoring-scripts-    |--------- Sends alerts & hourly      |
+| with-mail.py               |--------- summaries                  |
 +----------------------------+-------------------------'           |
          |                                                      |
          v                                                      v
@@ -45,41 +78,58 @@
 ### 1. **Log-shipper.py** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Log-shipper.py))
 - **Runs on each sender/server (Nginx host)**
 - Watches `/app/log/nginx/access.log`
-- **Failover features:**  
+- **Failover features:**
   - Handles log rotation (detects inode change, resets offset)
   - Restarts from the correct offset after server reboot or patching
-  - Maintains offset file for reliability
+  - Maintains persistent offset file for reliability
 - Sends log lines in chunks via HTTP POST to the receiver; skips health check lines
 
 ### 2. **Log-reciever.py** (middle receiver server)
-- Runs on the middle server, accepts log streams via grouped TCP ports using Gunicorn for concurrency.
-  - E.g. servers 1-5 → port 5001; 6-11 → port 5002, etc.
-- Splits, groups, and saves incoming logs by IP and 20-minute batches.
+- Listens on grouped TCP ports with Gunicorn (e.g. servers 1-5 → port 5001; 6-11 → port 5002, etc.)
+- Saves incoming logs by server IP and 20-minute batch files
 
 ### 3. **Log-sender-to-client-end.sh** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Log-sender-to-client-end.sh))
-- On receiver server, periodically:
-  - Searches for new log batches
-  - Uses rsync+sshpass to securely send them to the client SFTP server
-  - Handles retry and archives sent/failed files
+- Periodically scans for new log batches
+- Uses rsync+sshpass to securely send logs to SFTP server
+- Handles retries and archives sent/failed files
 
 ### 4. **Log-Monitoring-scripts-with-mail.py** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Log-Monitoring-scripts-with-mail.py))
-- Tracks latest log arrival time for each server/source directory
-- If no log received from a server for >5 min, sends SMTP alert
-- Notifies on server recovery, emails hourly log summaries
+- Tracks latest log arrivals per server/source directory
+- Sends SMTP alerts if log missing/inactive for >5 min
+- Notifies on server recovery, emails hourly summaries
 
 ### 5. **Houskeep-log.sh** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Houskeep-log.sh))
 - Compresses logs older than 3 hours
-- Deletes logs older than retention (default 4 hours), except failed logs for troubleshooting
+- Deletes logs older than 4 hours (default), except failed logs
+
+---
+
+## Sample Log Directory Structure
+
+```
+/app/log/access-log-reciever/
+├── 10.10.21.181/
+│   ├── MyGP_accessLog_20251129_10-20.log
+│   ├── MyGP_accessLog_20251129_10-40.log
+│   └── ...
+├── 10.10.21.182/
+│   ├── MyGP_accessLog_20251129_10-20.log
+│   └── ...
+├── failed/
+│   └── MyGP_accessLog_20251129_09-40.log
+└── sent/
+    └── MyGP_accessLog_20251129_08-00.log
+```
+- Each server’s logs are saved in a separate directory.
+- Logs are named with date and time, representing 20-minute batches.  
+- Failed and sent logs are archived separately for traceability.
 
 ---
 
 ## Setup & Installation: Service Files (systemd)
 
 ### **A. Sender End (Log Shipper) – Setup as a Service**
-
-#### 1. **Create the service file:**
-Save the following in `/etc/systemd/system/log-shipper.service`:
-
+#### 1. Create the service file `/etc/systemd/system/log-shipper.service`:
 ```ini
 [Unit]
 Description=Log Shipper (Chunked Nginx Access Log Sender)
@@ -94,24 +144,21 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 ```
-
-#### 2. **Enable and Start Service:**
+#### 2. Enable and Start Service:
 ```bash
-sudo systemctl daemon-reload           # Reloads systemd unit files
-sudo systemctl enable log-shipper      # Enables the service on boot
-sudo systemctl start log-shipper       # Starts the service now
-sudo systemctl status log-shipper      # Shows running status
+sudo systemctl daemon-reload
+sudo systemctl enable log-shipper
+sudo systemctl start log-shipper
+sudo systemctl status log-shipper
 ```
-
 **Failover Guarantee:**  
-- The `log-shipper.py` maintains a persistent offset file. If the log rotates, or the server is patched/rebooted, it reads the new file, resets offset if needed, and resumes shipping from the correct line, ensuring no loss or duplication.
+- Maintains offset file and automatically resumes after rotation/reboot with no log loss.
 
 ---
 
 ### **B. Receiver End (Log Receiver/Sender/Monitor) – Setup as a Service**
 
-1. **Log-Receiver is typically run under Gunicorn** (for concurrency) and not always as a systemd service. But if you want to set it up as a service, create `/etc/systemd/system/log-receiver.service`:
-
+#### 1. Optional Service File `/etc/systemd/system/log-receiver.service`:
 ```ini
 [Unit]
 Description=Gunicorn Log Receiver (Nginx Log Collector)
@@ -127,18 +174,17 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 ```
-*(Repeat for other ports as needed)*
+*(Repeat for each port as needed)*
 
-2. **Enable and Start Service:**
+#### 2. Enable and Start Service:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable log-receiver
 sudo systemctl start log-receiver
 ```
 
-#### **Log Sender to SFTP (from receiver) as a service:**
+#### Log Sender to SFTP (from receiver) as a service:
 Create `/etc/systemd/system/edw-rsync.service`:
-
 ```ini
 [Unit]
 Description=EDW Log Rsync Shipper
@@ -153,40 +199,55 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 ```
-
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable edw-rsync
 sudo systemctl start edw-rsync
 ```
 
-#### **Monitoring and Housekeeping Scripts**
-- These can be run:
-  - As cron jobs executed periodically (`crontab -e`)
-  - Or as services using similar systemd files
+#### Monitoring & Housekeeping Scripts
+- Can be run as cron jobs (`crontab -e`) or as additional systemd services.
 
 ---
 
-## Monitoring & Alerting
+## Troubleshooting & FAQ
 
-- **Log-Monitoring-scripts-with-mail.py** tracks all incoming directories for each server, sends email alerts if logs stop arriving (via SMTP), and summarizes hourly file/line counts.
+**Q: The systemd service failed to start or is inactive. What should I do?**  
+A: Run:
+```bash
+sudo journalctl -u log-shipper  # or -u edw-rsync
+```
+Check for errors (file not found, permissions, dependencies).
 
----
+**Q: Why did log shipping suddenly stop?**  
+A:
+- Network connectivity issues
+- Log rotation/offset file problems
+- Ports/firewall blocks
+- Dependency issues
 
-## Housekeeping
+**Q: I changed a service file but nothing happened.**  
+A: Always run:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart <service-name>
+```
 
-- **Houskeep-log.sh** compresses old logs, deletes logs past retention, preserving failed transfers for troubleshooting.  
-- Run manually, as a cron job, or systemd service.
+**Q: How can I change the log retention period?**  
+A: Edit `LOG_RETENTION_HOURS` in `Houskeep-log.sh` and restart job/service.
+
+**Q: How do I update email alert recipients?**  
+A: Edit `MAIL_RECIPIENTS` variable in `Log-Monitoring-scripts-with-mail.py`.
 
 ---
 
 ## Prerequisites
 
-- **Python 3** (with `watchdog`, `tenacity`, possibly others)
-- **gunicorn** (for concurrent receivers)
-- **Bash, rsync, sshpass, gzip**
-- **Systemd** (for services)
-- **SMTP server** (for email alerts)
+- Python 3 (`watchdog`, `tenacity`)
+- gunicorn
+- Bash, rsync, sshpass, gzip
+- Systemd (for service management)
+- SMTP server (for email alerts)
 
 ---
 
@@ -196,7 +257,8 @@ MIT License
 
 ---
 
-### **Notes & Troubleshooting**
+### Notes & Troubleshooting
+
 - After any change to a service file, always run `sudo systemctl daemon-reload`.
 - To view logs, use `journalctl -u log-shipper` or `journalctl -u edw-rsync`.
 - Restart services after significant changes: `sudo systemctl restart <service-name>`.
