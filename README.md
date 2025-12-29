@@ -42,6 +42,52 @@
 
 ---
 
+## Configuration (NEW in v5.0!)
+
+**Log-RT-Sync now supports centralized configuration via YAML files!**
+
+### Quick Configuration Setup
+
+1. **Copy the example configuration:**
+   ```bash
+   cp config.example.yaml config.yaml
+   ```
+
+2. **Edit the configuration file:**
+   ```bash
+   nano config.yaml
+   ```
+   
+   Key settings to configure:
+   - **Server addresses and ports:** Update receiver URLs, SFTP endpoints
+   - **Log paths:** Customize log file locations for your environment
+   - **SFTP credentials:** Set username, password, and destination paths
+   - **Email settings:** Configure SMTP server and alert recipients
+   - **Time windows:** Customize log batching timeframes (20-min, 10-min, etc.)
+   - **Retention policies:** Set compression and deletion timeframes
+
+3. **Use configuration with services:**
+   ```bash
+   # All scripts support -c/--config parameter
+   python3 Log-shipper.py -c config.yaml
+   python3 Log-reciever.py -c config.yaml
+   python3 Log-Monitoring-scripts-with-mail.py -c config.yaml
+   ./Log-sender-to-client-end.sh -c config.yaml
+   ./Houskeep-log.sh -c config.yaml
+   ```
+
+### Configuration Features
+
+- **Centralized Management:** Single file controls all components
+- **Customizable Time Windows:** Change from 20-minute to 10-minute or 15-minute batches
+- **Multiple Servers:** Easy to manage settings for multiple shippers/receivers
+- **Environment-specific:** Maintain different configs for dev/staging/production
+- **Backward Compatible:** Works with or without config file (uses defaults)
+
+📖 **[Full Configuration Guide →](CONFIG.md)** - Detailed documentation with examples
+
+---
+
 ## Architecture & Workflow
 
 ```
@@ -75,32 +121,44 @@
 
 ## Components
 
+**All components now support centralized configuration via YAML files!** Use `-c config.yaml` to specify your configuration file, or place it in a default location. See [CONFIG.md](CONFIG.md) for details.
+
 ### 1. **Log-shipper.py** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Log-shipper.py))
 - **Runs on each sender/server (Nginx host)**
-- Watches `/app/log/nginx/access.log`
+- Watches nginx access logs (configurable path)
 - **Failover features:**
   - Handles log rotation (detects inode change, resets offset)
   - Restarts from the correct offset after server reboot or patching
   - Maintains persistent offset file for reliability
 - Sends log lines in chunks via HTTP POST to the receiver; skips health check lines
+- **Configuration:** Customize log path, receiver URL, chunk size, retry settings
 
 ### 2. **Log-reciever.py** (middle receiver server)
-- Listens on grouped TCP ports with Gunicorn (e.g. servers 1-5 → port 5001; 6-11 → port 5002, etc.)
-- Saves incoming logs by server IP and 20-minute batch files
+- Listens on TCP ports with Flask/Gunicorn (configurable)
+- Saves incoming logs by server IP and time-based batch files
+- **Configuration:** Customize time windows (20-min, 10-min, 15-min, etc.), ports, directories
 
 ### 3. **Log-sender-to-client-end.sh** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Log-sender-to-client-end.sh))
 - Periodically scans for new log batches
 - Uses rsync+sshpass to securely send logs to SFTP server
 - Handles retries and archives sent/failed files
+- **Configuration:** SFTP credentials, paths, retry settings, file patterns
 
 ### 4. **Log-Monitoring-scripts-with-mail.py** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Log-Monitoring-scripts-with-mail.py))
 - Tracks latest log arrivals per server/source directory
-- Sends SMTP alerts if log missing/inactive for >5 min
+- Sends SMTP alerts if log missing/inactive (configurable threshold)
 - Notifies on server recovery, emails hourly summaries
+- **Configuration:** Email settings, alert thresholds, monitoring paths
 
 ### 5. **Houskeep-log.sh** ([source](https://github.com/sajjadm624/Log-RT-Sync/blob/main/Houskeep-log.sh))
-- Compresses logs older than 3 hours
-- Deletes logs older than 4 hours (default), except failed logs
+- Compresses logs older than N hours (configurable)
+- Deletes logs older than retention period (configurable), except failed logs
+- **Configuration:** Retention policies, paths, exclusion patterns
+
+### 6. **config_loader.py** & **config_helper.py** (NEW)
+- Configuration loading and parsing utilities
+- Supports Python and Bash script integration
+- Validates configuration and provides defaults
 
 ---
 
@@ -138,8 +196,13 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 /app/log/nginx/log-shipper/log-shipper.py
+WorkingDirectory=/app/log/nginx/log-shipper
+# With configuration file (recommended):
+ExecStart=/usr/bin/python3 /app/log/nginx/log-shipper/Log-shipper.py -c /etc/log-rt-sync/config.yaml
+# Or without config file (uses defaults):
+# ExecStart=/usr/bin/python3 /app/log/nginx/log-shipper/Log-shipper.py
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -158,18 +221,22 @@ sudo systemctl status log-shipper
 
 ### **B. Receiver End (Log Receiver/Sender/Monitor) – Setup as a Service**
 
-#### 1. Optional Service File `/etc/systemd/system/log-receiver.service`:
+#### 1. Log Receiver Service `/etc/systemd/system/log-receiver.service`:
 ```ini
 [Unit]
-Description=Gunicorn Log Receiver (Nginx Log Collector)
+Description=Log Receiver (Nginx Log Collector)
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/path/to/log-rt-sync
-ExecStart=/usr/local/bin/gunicorn --workers 4 --bind 0.0.0.0:5001 log-reciever:app
+WorkingDirectory=/opt/log-rt-sync
+# With configuration file (recommended):
+ExecStart=/usr/bin/python3 /opt/log-rt-sync/Log-reciever.py -c /etc/log-rt-sync/config.yaml
+# Or with Gunicorn for production (higher concurrency):
+# ExecStart=/usr/local/bin/gunicorn --workers 4 --bind 0.0.0.0:5001 "Log-reciever:app"
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -181,32 +248,76 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable log-receiver
 sudo systemctl start log-receiver
+sudo systemctl status log-receiver
 ```
 
-#### Log Sender to SFTP (from receiver) as a service:
-Create `/etc/systemd/system/edw-rsync.service`:
+#### 3. Log Sender to SFTP Service `/etc/systemd/system/log-sender.service`:
 ```ini
 [Unit]
-Description=EDW Log Rsync Shipper
+Description=Log Sender to SFTP (EDW Rsync)
 After=network.target
 
 [Service]
 Type=simple
 User=mygpadmin
-ExecStart=/bin/bash /home/mygpadmin/LogTerminal-rtSync/edw-rsync/edw-rsync_v4.sh
+WorkingDirectory=/opt/log-rt-sync
+# With configuration file (recommended):
+ExecStart=/bin/bash /opt/log-rt-sync/Log-sender-to-client-end.sh -c /etc/log-rt-sync/config.yaml
+# Or without config file (uses defaults):
+# ExecStart=/bin/bash /opt/log-rt-sync/Log-sender-to-client-end.sh
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable edw-rsync
-sudo systemctl start edw-rsync
+sudo systemctl enable log-sender
+sudo systemctl start log-sender
+sudo systemctl status log-sender
 ```
 
-#### Monitoring & Housekeeping Scripts
-- Can be run as cron jobs (`crontab -e`) or as additional systemd services.
+#### 4. Monitoring Service (Optional - can also run as cron)
+Create `/etc/systemd/system/log-monitor.timer` and `/etc/systemd/system/log-monitor.service`:
+
+**Timer file** (`log-monitor.timer`):
+```ini
+[Unit]
+Description=Log Monitoring Timer (runs every 5 minutes)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+```
+
+**Service file** (`log-monitor.service`):
+```ini
+[Unit]
+Description=Log Monitoring and Email Alerts
+
+[Service]
+Type=oneshot
+User=mygpadmin
+WorkingDirectory=/opt/log-rt-sync
+ExecStart=/usr/bin/python3 /opt/log-rt-sync/Log-Monitoring-scripts-with-mail.py -c /etc/log-rt-sync/config.yaml
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable log-monitor.timer
+sudo systemctl start log-monitor.timer
+```
+
+#### 5. Housekeeping Script (Cron Job)
+Add to crontab (`crontab -e`):
+```bash
+# Run housekeeping every hour
+0 * * * * /bin/bash /opt/log-rt-sync/Houskeep-log.sh -c /etc/log-rt-sync/config.yaml >> /var/log/housekeep.log 2>&1
+```
 
 ---
 
@@ -234,20 +345,67 @@ sudo systemctl restart <service-name>
 ```
 
 **Q: How can I change the log retention period?**  
-A: Edit `LOG_RETENTION_HOURS` in `Houskeep-log.sh` and restart job/service.
+A: Edit the `housekeeping` section in `config.yaml`:
+```yaml
+housekeeping:
+  compress_after_hours: 3  # Change this value
+  delete_after_hours: 4    # Change this value
+```
+Then restart the housekeeping service or cron job.
 
 **Q: How do I update email alert recipients?**  
-A: Edit `MAIL_RECIPIENTS` variable in `Log-Monitoring-scripts-with-mail.py`.
+A: Edit the `log_monitoring.email.recipients` section in `config.yaml`:
+```yaml
+log_monitoring:
+  email:
+    recipients:
+      - "new-email@example.com"
+      - "another@example.com"
+```
+Then restart the monitoring service.
+
+**Q: How do I change log batching timeframes (e.g., from 20-min to 10-min windows)?**  
+A: Edit the `log_receiver.time_windows` section in `config.yaml`:
+```yaml
+log_receiver:
+  time_windows:
+    - {start: 0, end: 9, label: "00-09"}
+    - {start: 10, end: 19, label: "10-19"}
+    # ... add more windows
+```
+See [CONFIG.md](CONFIG.md) for detailed examples.
+
+**Q: Can I use the services without a config file?**  
+A: Yes! All scripts are backward compatible. If no config file is specified or found, they use default hardcoded values.
 
 ---
 
 ## Prerequisites
 
-- Python 3 (`watchdog`, `tenacity`)
-- gunicorn
-- Bash, rsync, sshpass, gzip
-- Systemd (for service management)
-- SMTP server (for email alerts)
+### System Requirements
+- **Python 3.6+** with pip
+- **Bash 4.0+**
+- **systemd** (for service management)
+
+### Python Packages
+Install via pip:
+```bash
+pip3 install -r requirements.txt
+```
+
+Or manually:
+- `PyYAML>=6.0` - Configuration file parsing
+- `flask>=2.0.0` - Log receiver web service
+- `requests>=2.25.0` - HTTP client for log shipping
+- `watchdog>=2.0.0` - File system monitoring
+- `tenacity>=8.0.0` - Retry logic
+- `gunicorn>=20.0.0` - Production WSGI server (optional)
+
+### System Packages
+- **rsync** - Log file transfer
+- **sshpass** - Non-interactive SSH authentication
+- **gzip** - Log compression
+- **SMTP server** - For email alerts (can be remote)
 
 ---
 
