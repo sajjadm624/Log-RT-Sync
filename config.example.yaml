@@ -1,0 +1,145 @@
+# Log-RT-Sync Configuration File
+# Copy this file to config.yaml and customize for your environment
+
+# Log Shipper Configuration (runs on sender servers)
+log_shipper:
+  # Path to the nginx access log file to monitor
+  log_file: "/app/log/nginx/access.log"
+  
+  # Path to store the offset file (tracks position in log file)
+  offset_file: "/app/log/nginx/log-shipper/latest.offset"
+  
+  # Number of log lines to send in each chunk
+  chunk_size: 10000
+  
+  # URL of the receiver server to send logs to
+  receiver_url: "http://10.10.23.212:5000/upload"
+  
+  # Path for shipper status log file
+  logging_file: "/app/log/nginx/log-shipper/log_shipper_status.log"
+  
+  # Debounce delay in seconds (wait time before processing file changes)
+  debounce_delay: 1.0
+  
+  # Retry configuration
+  retry_attempts: 600
+  retry_wait_seconds: 6
+
+# Log Receiver Configuration (runs on middle receiver server)
+log_receiver:
+  # Base directory to store received logs
+  base_log_dir: "/app/log/access-log-reciever/"
+  
+  # Port to listen on (can run multiple instances on different ports)
+  port: 5000
+  
+  # Host to bind to (0.0.0.0 for all interfaces)
+  host: "0.0.0.0"
+  
+  # Time window configuration for log batching (in minutes)
+  # Logs are grouped into time windows for better organization
+  time_windows:
+    - start: 0
+      end: 19
+      label: "00-19"
+    - start: 20
+      end: 39
+      label: "20-39"
+    - start: 40
+      end: 59
+      label: "40-59"
+  
+  # Gunicorn configuration (for production deployment)
+  gunicorn:
+    workers: 4
+    bind: "0.0.0.0:5001"
+
+# Log Sender Configuration (transfers logs from receiver to SFTP)
+log_sender:
+  # Source directory containing logs to send
+  source_dir: "/app/log/access-log-reciever"
+  
+  # SFTP destination configuration
+  destination:
+    user: "mygp1"
+    host: "10.12.3.3"
+    port: 22022
+    directory: "/cdrdata/oracle/ProdEDW/source_data/MYGP"
+    password: "YOUR_PASSWORD_HERE"  # Change this!
+  
+  # Archive directories
+  archive_dir: "/app/log/access-log-reciever/sent"
+  failed_dir: "/app/log/access-log-reciever/failed"
+  
+  # Transfer settings
+  sleep_seconds: 60
+  max_retries: 3
+  rsync_timeout: 60
+  ssh_connect_timeout: 20
+  
+  # File pattern to match for transfer
+  file_pattern: "MyGP_accessLog_*.log"
+  
+  # Minimum file age in minutes before transfer (avoid transferring files still being written)
+  min_file_age_minutes: 2
+  
+  # Logging paths
+  linecount_log: "/home/mygpadmin/LogTerminal-rtSync/edw-rsync/linecount-report/linecount-report.log"
+  linecount_fail_log: "/home/mygpadmin/LogTerminal-rtSync/edw-rsync/linecount-report/linecount-report.fail"
+  out_log: "/home/mygpadmin/LogTerminal-rtSync/edw-rsync/log/edw-rsync_v4.out"
+  err_log: "/home/mygpadmin/LogTerminal-rtSync/edw-rsync/log/edw-rsync_v4.err"
+
+# Log Monitoring Configuration
+log_monitoring:
+  # Base directory to monitor
+  log_base_dir: "/app/log/access-log-reciever/"
+  
+  # Status file paths
+  status_file: "/home/mygpadmin/LogTerminal-rtSync/server-log-status/receiver_status.json"
+  report_file: "/home/mygpadmin/LogTerminal-rtSync/server-log-status/receiver_status_report.log"
+  linecount_file: "/home/mygpadmin/LogTerminal-rtSync/edw-rsync/linecount-report/linecount-report.log"
+  hour_state_file: "/home/mygpadmin/LogTerminal-rtSync/server-log-status/last_hour_state.json"
+  
+  # Alert threshold in minutes (mark server as inactive if no logs received)
+  threshold_minutes: 5
+  
+  # Email configuration
+  email:
+    smtp_host: "192.168.207.212"
+    smtp_port: 25
+    from_address: "mygp-devops@grameenphone.com"
+    recipients:
+      - "sazzad.manik@miaki.com.bd"
+    subject_prefix: "[Nginx Access Log Sync Monitor and Hourly report]"
+    timeout: 15
+  
+  # Hourly summary settings
+  hourly_summary:
+    enabled: true
+    # Send summary after this many minutes past the hour
+    send_after_minutes: 15
+
+# Housekeeping Configuration
+housekeeping:
+  # Base directory to clean up
+  base_dir: "/app/log/access-log-reciever"
+  
+  # Compress logs older than this many hours
+  compress_after_hours: 3
+  
+  # Delete logs older than this many hours
+  delete_after_hours: 4
+  
+  # Exclude patterns (directories/files to skip)
+  exclude_patterns:
+    - "*/failed/*"
+    - "stat*.log"
+    - "line*.log"
+
+# Global Settings
+global:
+  # Enable debug mode for verbose logging
+  debug: false
+  
+  # Timezone for log timestamps
+  timezone: "UTC"

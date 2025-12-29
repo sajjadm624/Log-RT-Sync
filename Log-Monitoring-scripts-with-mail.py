@@ -5,25 +5,35 @@ import json
 import time
 import smtplib
 import sys
+import argparse
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate
 
-# --- Configuration ---
-LOG_BASE_DIR = "/app/log/access-log-reciever/"
-STATUS_FILE = "/home/mygpadmin/LogTerminal-rtSync/server-log-status/receiver_status.json"
-REPORT_FILE = "/home/mygpadmin/LogTerminal-rtSync/server-log-status/receiver_status_report.log"
-LINECOUNT_FILE = "/home/mygpadmin/LogTerminal-rtSync/edw-rsync/linecount-report/linecount-report.log"
-HOUR_STATE_FILE = "/home/mygpadmin/LogTerminal-rtSync/server-log-status/last_hour_state.json"
-THRESHOLD_MINUTES = 5  # mark inactive after 5 minutes
+# Import configuration loader
+try:
+    from config_loader import load_config
+except ImportError:
+    print("Error: config_loader module not found. Please ensure config_loader.py is in the same directory.")
+    sys.exit(1)
 
-# --- Mail Settings ---
-MAIL_HOST = "192.168.207.212"
-MAIL_PORT = 25
-MAIL_FROM = "mygp-devops@grameenphone.com"
-MAIL_RECIPIENTS = ["sazzad.manik@miaki.com.bd"]
-MAIL_SUBJECT_PREFIX = "[Nginx Access Log Sync Monitor and Hourly report]"
+# Global configuration - will be loaded from config file
+CONFIG = None
+LOG_BASE_DIR = None
+STATUS_FILE = None
+REPORT_FILE = None
+LINECOUNT_FILE = None
+HOUR_STATE_FILE = None
+THRESHOLD_MINUTES = None
+MAIL_HOST = None
+MAIL_PORT = None
+MAIL_FROM = None
+MAIL_RECIPIENTS = None
+MAIL_SUBJECT_PREFIX = None
+MAIL_TIMEOUT = None
+HOURLY_SUMMARY_ENABLED = None
+HOURLY_SEND_AFTER_MINUTES = None
 
 # --- Helper: HTML Email Sender ---
 def send_html_email(subject, html_body):
@@ -35,7 +45,7 @@ def send_html_email(subject, html_body):
     msg.attach(MIMEText(html_body, "html"))
 
     try:
-        with smtplib.SMTP(MAIL_HOST, MAIL_PORT, timeout=15) as s:
+        with smtplib.SMTP(MAIL_HOST, MAIL_PORT, timeout=MAIL_TIMEOUT) as s:
             s.ehlo()
             s.sendmail(MAIL_FROM, MAIL_RECIPIENTS, msg.as_string())
         print(f"[{datetime.now()}] Email sent: {subject}")
@@ -170,8 +180,11 @@ def monitor_receivers():
 
 # --- Hourly Summary Logic ---
 def hourly_summary():
+    if not HOURLY_SUMMARY_ENABLED:
+        return
+    
     now = datetime.now()
-    if now.minute < 15:
+    if now.minute < HOURLY_SEND_AFTER_MINUTES:
         return
 
     last_state = load_json(HOUR_STATE_FILE)
@@ -253,7 +266,39 @@ def test_mail():
 
 # --- Entrypoint ---
 if __name__ == "__main__":
-    if "--test-mail" in sys.argv:
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Log Monitoring - Monitor log activity and send alerts")
+    parser.add_argument("-c", "--config", help="Path to configuration file")
+    parser.add_argument("--test-mail", action="store_true", help="Send a test email")
+    args = parser.parse_args()
+    
+    # Load configuration
+    CONFIG = load_config(args.config)
+    
+    # Get configuration values
+    monitoring_config = CONFIG.get_section('log_monitoring')
+    LOG_BASE_DIR = monitoring_config.get('log_base_dir', '/app/log/access-log-reciever/')
+    STATUS_FILE = monitoring_config.get('status_file', '/tmp/receiver_status.json')
+    REPORT_FILE = monitoring_config.get('report_file', '/tmp/receiver_status_report.log')
+    LINECOUNT_FILE = monitoring_config.get('linecount_file', '/tmp/linecount-report.log')
+    HOUR_STATE_FILE = monitoring_config.get('hour_state_file', '/tmp/last_hour_state.json')
+    THRESHOLD_MINUTES = monitoring_config.get('threshold_minutes', 5)
+    
+    # Email configuration
+    email_config = monitoring_config.get('email', {})
+    MAIL_HOST = email_config.get('smtp_host', 'localhost')
+    MAIL_PORT = email_config.get('smtp_port', 25)
+    MAIL_FROM = email_config.get('from_address', 'noreply@localhost')
+    MAIL_RECIPIENTS = email_config.get('recipients', ['admin@localhost'])
+    MAIL_SUBJECT_PREFIX = email_config.get('subject_prefix', '[Log Monitor]')
+    MAIL_TIMEOUT = email_config.get('timeout', 15)
+    
+    # Hourly summary configuration
+    hourly_config = monitoring_config.get('hourly_summary', {})
+    HOURLY_SUMMARY_ENABLED = hourly_config.get('enabled', True)
+    HOURLY_SEND_AFTER_MINUTES = hourly_config.get('send_after_minutes', 15)
+    
+    if args.test_mail:
         test_mail()
         sys.exit(0)
 

@@ -1,28 +1,34 @@
 
 import os
+import sys
 import time
 import logging
 import threading
 import requests
 import socket
+import argparse
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver as Observer  # Reliable in production
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-# CONFIGURATION
-LOG_FILE = "/app/log/nginx/access.log"
-OFFSET_FILE = "/app/log/nginx/log-shipper/latest.offset"
-CHUNK_SIZE = 10000
-SEND_URL = "http://10.10.23.212:5000/upload"
-LOGGING_FILE = "/app/log/nginx/log-shipper/log_shipper_status.log"
-DEBOUNCE_DELAY = 1.0  # seconds
+# Import configuration loader
+try:
+    from config_loader import load_config
+except ImportError:
+    print("Error: config_loader module not found. Please ensure config_loader.py is in the same directory.")
+    sys.exit(1)
 
-# SETUP LOGGING
-logging.basicConfig(
-    filename=LOGGING_FILE,
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+# Global configuration - will be loaded from config file
+CONFIG = None
+LOG_FILE = None
+OFFSET_FILE = None
+CHUNK_SIZE = None
+SEND_URL = None
+LOGGING_FILE = None
+DEBOUNCE_DELAY = None
+RETRY_ATTEMPTS = None
+RETRY_WAIT_SECONDS = None
+
 
 
 # ========== UTILITIES ==========
@@ -56,22 +62,28 @@ def should_skip_line(line):
         "health check" in line
     )
 
-@retry(stop=stop_after_attempt(600), wait=wait_fixed(6))
 def send_chunk(lines, start_offset, end_offset):
+    """Send log chunk with retry logic"""
     if not lines:
         return
-    data = "\n".join(lines)
-    host_ip = socket.gethostbyname(socket.gethostname())
+    
+    # Create retry decorator dynamically based on config
+    @retry(stop=stop_after_attempt(RETRY_ATTEMPTS), wait=wait_fixed(RETRY_WAIT_SECONDS))
+    def _send():
+        data = "\n".join(lines)
+        host_ip = socket.gethostbyname(socket.gethostname())
 
-    try:
-        logging.info(f"Sending {len(lines)} lines (offset {start_offset}-{end_offset}) to server.")
-        response = requests.post(SEND_URL, json={"log": data, "host": host_ip})
-        response.raise_for_status()
-        logging.info(f"Successfully sent {len(lines)} lines (offset {start_offset}-{end_offset}).")
-    except Exception as e:
-        logging.error(f"Failed to send lines (offset {start_offset}-{end_offset}): {e}")
-        logging.error(f"Last line (offset {end_offset}): {lines[-1]}")
-        raise
+        try:
+            logging.info(f"Sending {len(lines)} lines (offset {start_offset}-{end_offset}) to server.")
+            response = requests.post(SEND_URL, json={"log": data, "host": host_ip})
+            response.raise_for_status()
+            logging.info(f"Successfully sent {len(lines)} lines (offset {start_offset}-{end_offset}).")
+        except Exception as e:
+            logging.error(f"Failed to send lines (offset {start_offset}-{end_offset}): {e}")
+            logging.error(f"Last line (offset {end_offset}): {lines[-1]}")
+            raise
+    
+    _send()
 
 
 # ========== HANDLER ==========
@@ -161,7 +173,46 @@ def drain_backlog(handler: LogHandler):
 
 
 def main():
-    logging.info("Starting log shipper...")
+    """Main entry point with configuration support"""
+    global CONFIG, LOG_FILE, OFFSET_FILE, CHUNK_SIZE, SEND_URL, LOGGING_FILE, DEBOUNCE_DELAY
+    global RETRY_ATTEMPTS, RETRY_WAIT_SECONDS
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Log Shipper - Ship nginx logs to receiver")
+    parser.add_argument("-c", "--config", help="Path to configuration file")
+    args = parser.parse_args()
+    
+    # Load configuration
+    CONFIG = load_config(args.config)
+    
+    # Get configuration values
+    shipper_config = CONFIG.get_section('log_shipper')
+    LOG_FILE = shipper_config.get('log_file', '/app/log/nginx/access.log')
+    OFFSET_FILE = shipper_config.get('offset_file', '/app/log/nginx/log-shipper/latest.offset')
+    CHUNK_SIZE = shipper_config.get('chunk_size', 10000)
+    SEND_URL = shipper_config.get('receiver_url', 'http://10.10.23.212:5000/upload')
+    LOGGING_FILE = shipper_config.get('logging_file', '/app/log/nginx/log-shipper/log_shipper_status.log')
+    DEBOUNCE_DELAY = shipper_config.get('debounce_delay', 1.0)
+    RETRY_ATTEMPTS = shipper_config.get('retry_attempts', 600)
+    RETRY_WAIT_SECONDS = shipper_config.get('retry_wait_seconds', 6)
+    
+    # Ensure directories exist
+    os.makedirs(os.path.dirname(OFFSET_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(LOGGING_FILE), exist_ok=True)
+    
+    # Re-configure logging with the loaded config
+    logging.basicConfig(
+        filename=LOGGING_FILE,
+        level=logging.DEBUG if CONFIG.get('global.debug', False) else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        force=True,  # Force reconfiguration
+    )
+    
+    logging.info(f"Starting log shipper with config file...")
+    logging.info(f"  Log file: {LOG_FILE}")
+    logging.info(f"  Receiver URL: {SEND_URL}")
+    logging.info(f"  Chunk size: {CHUNK_SIZE}")
+    
     handler = LogHandler()
     drain_backlog(handler)
 

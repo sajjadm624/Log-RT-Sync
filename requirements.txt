@@ -1,0 +1,11 @@
+# Log-RT-Sync Python Dependencies
+
+# Core dependencies
+PyYAML>=6.0
+flask>=2.0.0
+requests>=2.25.0
+watchdog>=2.0.0
+tenacity>=8.0.0
+
+# Optional: For production deployments
+gunicorn>=20.0.0
