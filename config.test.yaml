@@ -1,0 +1,69 @@
+# Test Configuration for Log-RT-Sync
+# This is a minimal test configuration for validation
+
+log_shipper:
+  log_file: "/tmp/test-nginx.log"
+  offset_file: "/tmp/test-shipper/latest.offset"
+  chunk_size: 100
+  receiver_url: "http://localhost:5555/upload"
+  logging_file: "/tmp/test-shipper/status.log"
+  debounce_delay: 0.5
+  retry_attempts: 3
+  retry_wait_seconds: 1
+
+log_receiver:
+  base_log_dir: "/tmp/test-receiver/"
+  port: 5555
+  host: "127.0.0.1"
+  time_windows:
+    - start: 0
+      end: 19
+      label: "00-19"
+    - start: 20
+      end: 39
+      label: "20-39"
+    - start: 40
+      end: 59
+      label: "40-59"
+
+log_sender:
+  source_dir: "/tmp/test-receiver"
+  destination:
+    user: "testuser"
+    host: "localhost"
+    port: 22
+    directory: "/tmp/test-dest"
+    password: "testpass"
+  archive_dir: "/tmp/test-receiver/sent"
+  failed_dir: "/tmp/test-receiver/failed"
+  sleep_seconds: 10
+  max_retries: 2
+  file_pattern: "test_log_*.log"
+  min_file_age_minutes: 1
+
+log_monitoring:
+  log_base_dir: "/tmp/test-receiver/"
+  threshold_minutes: 2
+  status_file: "/tmp/test-monitor/status.json"
+  report_file: "/tmp/test-monitor/report.log"
+  linecount_file: "/tmp/test-monitor/linecount.log"
+  hour_state_file: "/tmp/test-monitor/hour_state.json"
+  email:
+    smtp_host: "localhost"
+    smtp_port: 25
+    from_address: "test@localhost"
+    recipients:
+      - "admin@localhost"
+    subject_prefix: "[Test Monitor]"
+    timeout: 5
+  hourly_summary:
+    enabled: false
+
+housekeeping:
+  base_dir: "/tmp/test-receiver"
+  compress_after_hours: 1
+  delete_after_hours: 2
+
+global:
+  debug: true
+  timezone: "UTC"

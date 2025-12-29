@@ -13,7 +13,10 @@ from config_loader import load_config
 
 def export_bash_env(config_path=None):
     """Export configuration as bash environment variables"""
+    # Set silent mode for clean export
+    os.environ['CONFIG_SILENT'] = '1'
     config = load_config(config_path)
+    del os.environ['CONFIG_SILENT']
     
     # Log sender configuration
     sender_config = config.get_section('log_sender')

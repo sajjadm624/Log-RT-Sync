@@ -54,7 +54,9 @@ class ConfigLoader:
         try:
             with open(config_file, 'r') as f:
                 self.config = yaml.safe_load(f) or {}
-            print(f"Loaded configuration from: {config_file}")
+            # Only print to stderr when not being used for export
+            if not os.environ.get('CONFIG_SILENT'):
+                print(f"Loaded configuration from: {config_file}", file=sys.stderr)
         except Exception as e:
             print(f"Error loading config file {config_file}: {e}", file=sys.stderr)
             print("Using default configuration", file=sys.stderr)
