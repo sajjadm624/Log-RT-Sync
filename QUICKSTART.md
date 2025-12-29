@@ -86,6 +86,30 @@ housekeeping:
   delete_after_hours: 4      # Delete logs older than 4 hours
 ```
 
+### Port Grouping for Multiple Servers (Production Setup)
+
+For handling many servers with real-time syncing, use **port grouping** with Gunicorn workers:
+
+**Example: 20 servers grouped across 5 ports**
+- Servers 1-4 → Port 5000 (4 workers)
+- Servers 5-8 → Port 5001 (4 workers)
+- Servers 9-12 → Port 5002 (4 workers)
+- Servers 13-16 → Port 5003 (4 workers)
+- Servers 17-20 → Port 5004 (4 workers)
+
+**Result**: 20 concurrent workers = true parallel processing
+
+```bash
+# Start each port with Gunicorn (4 workers each)
+gunicorn --workers 4 --bind 0.0.0.0:5000 Log-reciever:app &
+gunicorn --workers 4 --bind 0.0.0.0:5001 Log-reciever:app &
+gunicorn --workers 4 --bind 0.0.0.0:5002 Log-reciever:app &
+gunicorn --workers 4 --bind 0.0.0.0:5003 Log-reciever:app &
+gunicorn --workers 4 --bind 0.0.0.0:5004 Log-reciever:app &
+```
+
+See [CONFIG.md](CONFIG.md) section "Port Grouping for Server Groups" for detailed setup.
+
 ## 🔧 Systemd Service Setup
 
 ### Create Service File

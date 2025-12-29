@@ -261,7 +261,9 @@ If you're upgrading from an older version:
 
 ## Advanced Configuration
 
-### Multiple Receiver Ports
+### Multiple Receiver Ports with Port Grouping
+
+#### Simple Multi-Port Setup
 
 You can run multiple receiver instances on different ports by:
 
@@ -271,6 +273,130 @@ You can run multiple receiver instances on different ports by:
    python3 Log-reciever.py -c config-port5001.yaml
    python3 Log-reciever.py -c config-port5002.yaml
    ```
+
+#### Port Grouping for Server Groups (Production Setup)
+
+For real-time syncing with high throughput, you can use **port grouping** where groups of servers are mapped to specific ports. This enables parallel processing and load distribution.
+
+**Example: 20 Servers with 5 Port Groups**
+
+Server Distribution:
+- Servers 1-4 → Port 5000
+- Servers 5-8 → Port 5001
+- Servers 9-12 → Port 5002
+- Servers 13-16 → Port 5003
+- Servers 17-20 → Port 5004
+
+**Configuration Setup:**
+
+1. Create separate config files for each port group:
+
+```yaml
+# config-port5000.yaml
+log_receiver:
+  base_log_dir: "/app/log/access-log-reciever/"
+  port: 5000
+  host: "0.0.0.0"
+  time_windows:
+    - {start: 0, end: 19, label: "00-19"}
+    - {start: 20, end: 39, label: "20-39"}
+    - {start: 40, end: 59, label: "40-59"}
+  gunicorn:
+    workers: 4  # 4 workers for parallel processing
+    bind: "0.0.0.0:5000"
+```
+
+Repeat for ports 5001, 5002, 5003, 5004 with appropriate port numbers.
+
+2. Start each receiver with Gunicorn for parallel processing:
+
+```bash
+# Port 5000 (Servers 1-4)
+gunicorn --workers 4 --bind 0.0.0.0:5000 --config python:config Log-reciever:app &
+
+# Port 5001 (Servers 5-8)
+gunicorn --workers 4 --bind 0.0.0.0:5001 --config python:config Log-reciever:app &
+
+# Port 5002 (Servers 9-12)
+gunicorn --workers 4 --bind 0.0.0.0:5002 --config python:config Log-reciever:app &
+
+# Port 5003 (Servers 13-16)
+gunicorn --workers 4 --bind 0.0.0.0:5003 --config python:config Log-reciever:app &
+
+# Port 5004 (Servers 17-20)
+gunicorn --workers 4 --bind 0.0.0.0:5004 --config python:config Log-reciever:app &
+```
+
+Or use environment variables to load config:
+```bash
+# For each port
+CONFIG_FILE=/etc/log-rt-sync/config-port5000.yaml gunicorn --workers 4 --bind 0.0.0.0:5000 Log-reciever:app
+```
+
+**How Parallel Processing Works:**
+
+1. **Port-Level Parallelism**: Each port (5000-5004) runs independently, processing logs from its assigned server group simultaneously.
+
+2. **Worker-Level Parallelism**: Within each port, Gunicorn spawns 4 worker processes that handle incoming requests concurrently. If one worker is busy, another can process the next request.
+
+3. **Real-Time Syncing**: With 5 ports × 4 workers = 20 concurrent workers total, the system can handle up to 20 simultaneous log uploads without blocking.
+
+**Benefits:**
+- ✅ Load distribution across multiple ports
+- ✅ Parallel processing within each port group
+- ✅ No bottlenecks for real-time log streaming
+- ✅ Easy to scale by adding more ports/workers
+- ✅ Fault isolation - if one port fails, others continue
+
+**Shipper Configuration:**
+
+Configure each shipper to send to its assigned port:
+
+```yaml
+# Server 1-4 config
+log_shipper:
+  receiver_url: "http://receiver-host:5000/upload"
+
+# Server 5-8 config
+log_shipper:
+  receiver_url: "http://receiver-host:5001/upload"
+
+# ... and so on
+```
+
+**Systemd Service Example for Multiple Ports:**
+
+Create separate service files for each port:
+
+```ini
+# /etc/systemd/system/log-receiver-5000.service
+[Unit]
+Description=Log Receiver Port 5000 (Servers 1-4)
+After=network.target
+
+[Service]
+Type=notify
+User=root
+WorkingDirectory=/opt/log-rt-sync
+Environment="CONFIG_FILE=/etc/log-rt-sync/config-port5000.yaml"
+ExecStart=/usr/local/bin/gunicorn --workers 4 --bind 0.0.0.0:5000 Log-reciever:app
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable all services:
+```bash
+sudo systemctl enable log-receiver-5000
+sudo systemctl enable log-receiver-5001
+sudo systemctl enable log-receiver-5002
+sudo systemctl enable log-receiver-5003
+sudo systemctl enable log-receiver-5004
+
+sudo systemctl start log-receiver-{5000..5004}
+```
 
 ### Custom Time Windows
 

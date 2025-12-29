@@ -31,6 +31,7 @@ log_receiver:
   base_log_dir: "/app/log/access-log-reciever/"
   
   # Port to listen on (can run multiple instances on different ports)
+  # For port grouping: use different ports for server groups (e.g., 5000-5004 for 20 servers)
   port: 5000
   
   # Host to bind to (0.0.0.0 for all interfaces)
@@ -49,7 +50,9 @@ log_receiver:
       end: 59
       label: "40-59"
   
-  # Gunicorn configuration (for production deployment)
+  # Gunicorn configuration (for production deployment with parallel processing)
+  # Use multiple workers for concurrent request handling within each port
+  # Example: 4 workers per port × 5 ports = 20 concurrent workers for real-time syncing
   gunicorn:
     workers: 4
     bind: "0.0.0.0:5001"
